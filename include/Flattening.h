@@ -1,22 +1,14 @@
 #ifndef FLATTENING_H
 #define FLATTENING_H
 
-#include <Eigen/Dense>
+#include "MeshTypes.h"
 #include <vector>
-#include "CutMesh.h"
+#include <Eigen/Dense>
 
-Eigen::MatrixXd flatten_sphere(
-        const Eigen::MatrixXd& V,
-        const Eigen::MatrixXi& T,
-        const std::vector<int>& cones,
-        int orbifold_type,
-        CutMesh& cutMesh
-);
-
-CutMesh generate_cut_mesh(
-        const Eigen::MatrixXd& V,
-        const Eigen::MatrixXi& T,
-        const std::vector<std::vector<int>>& paths
+// 使用 OpenMesh 网格和顶点句柄
+Eigen::MatrixXd flatten_sphere_openmesh(
+        MyMesh& mesh,
+        const std::vector<int>& cones_indices
 );
 
 #endif // FLATTENING_H

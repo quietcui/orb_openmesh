@@ -14,7 +14,7 @@ find_package(Eigen3 CONFIG REQUIRED)
 
 add_executable(orb_openmesh
         src/main.cpp
-        src/CutMesh.cpp
+        #src/CutMesh.cpp
         src/MeshIO.cpp
         src/Flattening.cpp
         src/MeshUtils.cpp

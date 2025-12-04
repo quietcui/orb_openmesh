@@ -1,34 +1,31 @@
 #ifndef MESH_UTILS_H
 #define MESH_UTILS_H
 
-#include <Eigen/Dense>
+#include "MeshTypes.h"
 #include <Eigen/Sparse>
 #include <vector>
-#include <cmath>
-#include <set> // 引入 set 用于 find_boundary_vertices
+#include <cmath> // For M_PI
 
-// 实用函数
-double edge_length(const Eigen::MatrixXd& V, int i, int j);
-std::vector<int> get_vertex_neighbors(const Eigen::MatrixXi& T, int vertex_index);
-
-// 核心算法函数
-std::vector<int> find_shortest_path(
-        const Eigen::MatrixXd& V,
-        const Eigen::MatrixXi& T,
-        int start_v,
-        int end_v
+// 1. Dijkstra Shortest Path
+// Finds the shortest path between two vertices in a mesh.
+std::vector<MyMesh::VertexHandle> find_shortest_path(
+        MyMesh& mesh,
+        MyMesh::VertexHandle start_v,
+        MyMesh::VertexHandle end_v
 );
 
-// 几何工具函数 (新增声明)
-std::set<int> find_boundary_vertices( // <-- 🌟 新增声明 🌟
-        const Eigen::MatrixXi& T,
-        int num_vertices
-);
-
+// 2. Build Cotangent Laplacian Matrix
+// Computes the Cotangent Laplacian matrix for the mesh.
 void compute_cotangent_laplacian(
-        const Eigen::MatrixXd& V,
-        const Eigen::MatrixXi& T,
+        MyMesh& mesh,
         Eigen::SparseMatrix<double>& L
+);
+
+// 3. Extract Ordered Boundary Loop
+// Extracts the vertices forming the outer boundary loop in order.
+bool get_boundary_loop(
+        MyMesh& mesh,
+        std::vector<MyMesh::VertexHandle>& boundary_loop
 );
 
 #endif // MESH_UTILS_H

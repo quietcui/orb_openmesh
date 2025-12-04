@@ -1,0 +1,2 @@
+#pragma code_page(65001)
+1 /* CREATEPROCESS_MANIFEST_RESOURCE_ID */ 24 /* RT_MANIFEST */ "D:/WorkSpace/orb/cmake-build-debug/CMakeFiles/orb_openmesh.dir/embed.manifest"

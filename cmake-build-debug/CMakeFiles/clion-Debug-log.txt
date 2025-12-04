@@ -1,0 +1,4 @@
+"D:\CLion 2025.2.3\bin\cmake\win\x64\bin\cmake.exe" -DCMAKE_BUILD_TYPE=Debug "-DCMAKE_MAKE_PROGRAM=D:/CLion 2025.2.3/bin/ninja/win/x64/ninja.exe" -DCMAKE_TOOLCHAIN_FILE=D:/vcpkg/scripts/buildsystems/vcpkg.cmake -G Ninja -S D:\WorkSpace\orb -B D:\WorkSpace\orb\cmake-build-debug
+-- Configuring done (0.1s)
+-- Generating done (0.1s)
+-- Build files have been written to: D:/WorkSpace/orb/cmake-build-debug

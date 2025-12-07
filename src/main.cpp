@@ -1,41 +1,67 @@
-#include "Flattening.h"
 #include "MeshTypes.h"
+#include "Flattening.h"
+#include "Cutting.h"
+
+#include <OpenMesh/Core/IO/MeshIO.hh>
 #include <iostream>
+#include <string>
 #include <vector>
 
-int main() {
+int main(int argc, char** argv)
+{
+    std::string input_path  = "../data/sphere.off";
+    std::string output_path = "flattened_result.obj";
+
+    if (argc >= 2)
+        input_path = argv[1];
+    if (argc >= 3)
+        output_path = argv[2];
+
     MyMesh mesh;
-    // NOTE: 请确保您的项目根目录下有一个名为 'data' 的文件夹，其中包含 'sphere.off' 文件。
-    std::string input_file = "../data/sphere.off";
 
-    // 1. Read the mesh
-    OpenMesh::IO::Options opt;
-    if (!OpenMesh::IO::read_mesh(mesh, input_file, opt)) {
-        std::cerr << "Error: Could not read file: " << input_file << std::endl;
-        return 1;
+    try
+    {
+        if (!OpenMesh::IO::read_mesh(mesh, input_path))
+        {
+            std::cerr << "Failed to read mesh file: " << input_path << "\n";
+            return 1;
+        }
     }
-    std::cout << "Mesh read successfully: " << mesh.n_vertices() << " vertices, " << mesh.n_faces() << " faces." << std::endl;
-
-    // 2. Set cone indices (假设输入文件是 1-based 索引, 所以在 C++ 中需要 -1)
-    std::vector<int> cones = {50-1, 100-1, 130-1};
-    std::cout << "Using cone indices: " << cones[0] << ", " << cones[1] << ", " << cones[2] << std::endl;
-
-    // 3. Execute flattening
-    Eigen::MatrixXd res = flatten_sphere_openmesh(mesh, cones);
-
-    if (res.rows() == 0) {
-        std::cerr << "Flattening failed. See error messages above." << std::endl;
+    catch (const std::exception& e)
+    {
+        std::cerr << "Exception while reading mesh: " << e.what() << "\n";
         return 1;
     }
 
-    // 4. Save the result
-    std::string output_file = "flattened_result.obj";
-    if (OpenMesh::IO::write_mesh(mesh, output_file)) {
-        std::cout << "Result successfully saved to: " << output_file << std::endl;
-    } else {
-        std::cerr << "Error: Failed to write mesh to file." << std::endl;
+    std::cout << "Mesh loaded successfully: "
+              << mesh.n_vertices() << " vertices, "
+              << mesh.n_faces()    << " faces\n";
+
+    // 1-based 的 Matlab index -> 0-based
+    std::vector<int> cones_in = {50 - 1, 100 - 1, 130 - 1};  // TODO: 换成你真实的锥点
+    std::vector<int> cones_after_cut;
+
+    // 1) 先切缝，并更新锥点索引
+    cut_mesh_along_cones(mesh, cones_in, cones_after_cut);
+
+    // 2) 再用更新后的锥点做 orbifold flatten
+    flatten_sphere(mesh, cones_after_cut, 1);
+
+    try
+    {
+        if (!OpenMesh::IO::write_mesh(mesh, output_path))
+        {
+            std::cerr << "Failed to write mesh to: " << output_path << "\n";
+            return 1;
+        }
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Exception while writing mesh: " << e.what() << "\n";
         return 1;
     }
 
+    std::cout << "Flattening finished. Output written to: "
+              << output_path << "\n";
     return 0;
 }

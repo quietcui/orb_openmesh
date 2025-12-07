@@ -1,194 +1,133 @@
 #include "MeshUtils.h"
-#include <queue>
-#include <map>
-#include <iostream>
-#include <algorithm> // for std::reverse
-#include <limits> // for std::numeric_limits
 
-// =========================================================
-// 1. Dijkstra Shortest Path (OpenMesh Implementation)
-// =========================================================
-std::vector<MyMesh::VertexHandle> find_shortest_path(
-        MyMesh& mesh,
-        MyMesh::VertexHandle start_v,
-        MyMesh::VertexHandle end_v
-) {
-    // Use dynamic properties for distance and predecessor tracking
-    OpenMesh::VPropHandleT<double> dist_prop;
-    OpenMesh::VPropHandleT<MyMesh::VertexHandle> prev_prop;
-    mesh.add_property(dist_prop);
-    mesh.add_property(prev_prop);
+#include <Eigen/Sparse>
+#include <cmath>
+#include <Eigen/Geometry>   // ★ 为了 Vector3d::cross 等几何函数
+// -------------------- 收集一圈边界顶点 --------------------
 
-    // Initialization
-    for (auto v_it : mesh.vertices()) {
-        mesh.property(dist_prop, v_it) = std::numeric_limits<double>::infinity();
-    }
-    mesh.property(dist_prop, start_v) = 0.0;
+void collect_boundary_loop(const MyMesh& mesh,
+                           std::vector<MyMesh::VertexHandle>& boundary)
+{
+    boundary.clear();
 
-    // Priority Queue: {distance, vertex handle}
-    using P = std::pair<double, MyMesh::VertexHandle>;
-    std::priority_queue<P, std::vector<P>, std::greater<P>> pq;
-    pq.push({0.0, start_v});
-
-    while(!pq.empty()) {
-        double d = pq.top().first;
-        MyMesh::VertexHandle u = pq.top().second;
-        pq.pop();
-
-        if (d > mesh.property(dist_prop, u)) continue;
-        if (u == end_v) break;
-
-        // Iterate over neighbors using Vertex-Vertex Iterator
-        for (auto vv_it = mesh.vv_iter(u); vv_it.is_valid(); ++vv_it) {
-            MyMesh::VertexHandle v = *vv_it;
-            double len = (mesh.point(u) - mesh.point(v)).norm();
-
-            if (mesh.property(dist_prop, u) + len < mesh.property(dist_prop, v)) {
-                mesh.property(dist_prop, v) = mesh.property(dist_prop, u) + len;
-                mesh.property(prev_prop, v) = u;
-                pq.push({mesh.property(dist_prop, v), v});
-            }
-        }
-    }
-
-    // Backtrack path
-    std::vector<MyMesh::VertexHandle> path;
-    MyMesh::VertexHandle curr = end_v;
-
-    if (mesh.property(dist_prop, end_v) == std::numeric_limits<double>::infinity()) {
-        // Cleanup properties
-        mesh.remove_property(dist_prop);
-        mesh.remove_property(prev_prop);
-        return {};
-    }
-
-    // Reconstruction
-    while (curr.is_valid() && curr != start_v) {
-        path.push_back(curr);
-        curr = mesh.property(prev_prop, curr);
-    }
-    if (curr == start_v) path.push_back(start_v);
-
-    std::reverse(path.begin(), path.end());
-
-    // Cleanup properties
-    mesh.remove_property(dist_prop);
-    mesh.remove_property(prev_prop);
-
-    return path;
-}
-
-// =========================================================
-// 2. Cotangent Laplacian Matrix (OpenMesh Implementation)
-// **FIXED: Ensure N x N matrix structure regardless of boundary status.**
-// =========================================================
-void compute_cotangent_laplacian(MyMesh& mesh, Eigen::SparseMatrix<double>& L) {
-    int n_verts = mesh.n_vertices();
-    L.resize(n_verts, n_verts);
-    std::vector<Eigen::Triplet<double>> triplets;
-
-    // Iterate over ALL vertices to ensure an N x N matrix structure.
-    for (auto v_it : mesh.vertices()) {
-        double weight_sum = 0.0;
-        int i = v_it.idx();
-
-        // Only calculate weights and off-diagonal entries for INTERNAL vertices
-        // Boundary vertices will have a diagonal weight_sum of 0, enforcing the Dirichlet condition implicitly.
-        if (!mesh.is_boundary(v_it)) {
-            // Iterate over outgoing halfedges
-            for (auto voh_it = mesh.voh_iter(v_it); voh_it.is_valid(); ++voh_it) {
-                MyMesh::HalfedgeHandle he = *voh_it;
-                MyMesh::VertexHandle v_neighbor = mesh.to_vertex_handle(he);
-                int j = v_neighbor.idx();
-
-                double weight = 0.0;
-
-                // Calculate Cotangent weights (Alpha + Beta)
-                // 1. Alpha Angle (from the face 'left' of he)
-                if (!mesh.is_boundary(he)) {
-                    MyMesh::HalfedgeHandle he_next = mesh.next_halfedge_handle(he);
-                    MyMesh::VertexHandle v_alpha = mesh.to_vertex_handle(he_next);
-
-                    Eigen::Vector3d p1 = to_eigen(mesh.point(v_it));
-                    Eigen::Vector3d p2 = to_eigen(mesh.point(v_neighbor));
-                    Eigen::Vector3d p3 = to_eigen(mesh.point(v_alpha));
-
-                    Eigen::Vector3d u = p1 - p3;
-                    Eigen::Vector3d v = p2 - p3;
-                    double cot_alpha = u.dot(v) / (u.cross(v).norm());
-                    weight += std::max(0.0, cot_alpha);
-                }
-
-                // 2. Beta Angle (from the face 'right' of he, using he_opp)
-                MyMesh::HalfedgeHandle he_opp = mesh.opposite_halfedge_handle(he);
-                if (!mesh.is_boundary(he_opp)) {
-                    MyMesh::HalfedgeHandle he_opp_next = mesh.next_halfedge_handle(he_opp);
-                    MyMesh::VertexHandle v_beta = mesh.to_vertex_handle(he_opp_next);
-
-                    Eigen::Vector3d p1 = to_eigen(mesh.point(v_it));
-                    Eigen::Vector3d p2 = to_eigen(mesh.point(v_neighbor));
-                    Eigen::Vector3d p3 = to_eigen(mesh.point(v_beta));
-
-                    Eigen::Vector3d u = p1 - p3;
-                    Eigen::Vector3d v = p2 - p3;
-                    double cot_beta = u.dot(v) / (u.cross(v).norm());
-                    weight += std::max(0.0, cot_beta);
-                }
-
-                weight *= 0.5;
-
-                // Off-diagonal element L[i, j]
-                triplets.push_back(Eigen::Triplet<double>(i, j, -weight));
-                weight_sum += weight;
-            }
-        } // End if (!mesh.is_boundary(v_it))
-
-        // Diagonal element L[i, i] MUST be added for ALL vertices.
-        triplets.push_back(Eigen::Triplet<double>(i, i, weight_sum));
-    }
-
-    L.setFromTriplets(triplets.begin(), triplets.end());
-}
-
-// =========================================================
-// 3. Extract Ordered Boundary Loop (OpenMesh Implementation)
-// =========================================================
-bool get_boundary_loop(MyMesh& mesh, std::vector<MyMesh::VertexHandle>& boundary_loop) {
-    boundary_loop.clear();
-
-    // 1. Find the first boundary halfedge
+    // 找第一个边界半边
     MyMesh::HalfedgeHandle he_start;
-    bool found = false;
 
-    for (auto he_it : mesh.halfedges()) {
-        if (mesh.is_boundary(he_it)) {
-            he_start = he_it;
-            found = true;
+    for (auto he : mesh.halfedges())
+    {
+        if (mesh.is_boundary(he))
+        {
+            he_start = he;
             break;
         }
     }
 
-    if (!found) return false; // Closed mesh, no boundary
+    if (!he_start.is_valid())
+    {
+        // 没有边界（闭合球），说明切缝还没做，这种情况 flatten_sphere 里会处理
+        return;
+    }
 
-    // 2. Loop along boundary halfedges
-    MyMesh::HalfedgeHandle he_curr = he_start;
+    // 按半边循环走一圈
+    MyMesh::HalfedgeHandle he = he_start;
+    do
+    {
+        MyMesh::VertexHandle vh = mesh.to_vertex_handle(he);
+        boundary.push_back(vh);
 
-    size_t max_iter = mesh.n_vertices() * 2;
-    size_t count = 0;
-
-    do {
-        // The vertex *from* which the halfedge starts is the boundary vertex
-        boundary_loop.push_back(mesh.from_vertex_handle(he_curr));
-
-        // Move to the next boundary halfedge
-        he_curr = mesh.next_halfedge_handle(he_curr);
-
-        count++;
-        if (count > max_iter) {
-            std::cerr << "Error: Boundary tracing stuck in infinite loop." << std::endl;
-            return false;
+        // 沿着边界往前走
+        MyMesh::HalfedgeHandle next_he = mesh.next_halfedge_handle(he);
+        while (!mesh.is_boundary(next_he))
+        {
+            // 如果 next 不是边界，一般是遇到了内部半边，跳到对边继续
+            next_he = mesh.opposite_halfedge_handle(next_he);
+            next_he = mesh.next_halfedge_handle(next_he);
         }
-    } while (he_curr != he_start);
 
-    return true;
+        he = next_he;
+
+    } while (he != he_start);
+}
+
+// -------------------- 标准 cotan Laplacian --------------------
+
+void compute_cotangent_laplacian(const MyMesh& mesh,
+                                 Eigen::SparseMatrix<double>& L)
+{
+    const int n = static_cast<int>(mesh.n_vertices());
+
+    std::vector<Eigen::Triplet<double>> trips;
+    trips.reserve(n * 7);
+
+    std::vector<double> diag(n, 0.0);
+
+    auto cot_angle_at = [](const Eigen::Vector3d& a,
+                           const Eigen::Vector3d& b,
+                           const Eigen::Vector3d& c) -> double
+    {
+        // 计算三角形 (a,b,c) 在 b 点的 cot(angle)
+        Eigen::Vector3d u = a - b;
+        Eigen::Vector3d v = c - b;
+        Eigen::Vector3d cross = u.cross(v);
+        double denom = cross.norm();
+        if (denom < 1e-12)
+            return 0.0;
+        return u.dot(v) / denom;
+    };
+
+    for (auto eh : mesh.edges())
+    {
+        if (mesh.is_boundary(eh))
+            continue;
+
+        // edge 有两个半边
+        auto he0 = mesh.halfedge_handle(eh, 0);
+        auto he1 = mesh.halfedge_handle(eh, 1);
+
+        MyMesh::VertexHandle vi = mesh.to_vertex_handle(he0);
+        MyMesh::VertexHandle vj = mesh.to_vertex_handle(he1);
+
+        int i = vi.idx();
+        int j = vj.idx();
+
+        // 两个三角形各自的第三个点（k 和 l）
+        MyMesh::HalfedgeHandle he0_next = mesh.next_halfedge_handle(he0);
+        MyMesh::HalfedgeHandle he1_next = mesh.next_halfedge_handle(he1);
+
+        MyMesh::VertexHandle vk = mesh.to_vertex_handle(he0_next);
+        MyMesh::VertexHandle vl = mesh.to_vertex_handle(he1_next);
+
+        Eigen::Vector3d pi = to_eigen(mesh.point(vi));
+        Eigen::Vector3d pj = to_eigen(mesh.point(vj));
+        Eigen::Vector3d pk = to_eigen(mesh.point(vk));
+        Eigen::Vector3d pl = to_eigen(mesh.point(vl));
+
+        // 对应两个三角形在对边的角的 cot 值
+        double w = 0.0;
+        // 三角形 (i,k,j) 在 k 点的角
+        w += cot_angle_at(pi, pk, pj);
+        // 三角形 (i,l,j) 在 l 点的角
+        w += cot_angle_at(pi, pl, pj);
+
+        w *= 0.5; // 标准 cotan 权重
+
+        if (std::abs(w) < 1e-16)
+            continue;
+
+        diag[i] += w;
+        diag[j] += w;
+
+        trips.emplace_back(i, j, -w);
+        trips.emplace_back(j, i, -w);
+    }
+
+    // 对角线
+    for (int i = 0; i < n; ++i)
+    {
+        trips.emplace_back(i, i, diag[i]);
+    }
+
+    L.resize(n, n);
+    L.setFromTriplets(trips.begin(), trips.end());
+    L.makeCompressed();
 }

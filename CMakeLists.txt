@@ -18,6 +18,7 @@ add_executable(orb_openmesh
         src/MeshIO.cpp
         src/Flattening.cpp
         src/MeshUtils.cpp
+        src/Cutting.cpp
 )
 
 target_link_libraries(orb_openmesh PRIVATE

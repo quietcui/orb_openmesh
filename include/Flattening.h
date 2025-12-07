@@ -1,14 +1,13 @@
-#ifndef FLATTENING_H
-#define FLATTENING_H
+#pragma once
 
 #include "MeshTypes.h"
+
+#include <Eigen/Core>
 #include <vector>
-#include <Eigen/Dense>
 
-// 使用 OpenMesh 网格和顶点句柄
-Eigen::MatrixXd flatten_sphere_openmesh(
+// orbifold_type 先预留参数，目前实现的是 3 个锥点的 Type-I 圆盘
+// cones 是顶点索引（0-based）——和你 mesh 的 vertex handle 对应
+void flatten_sphere(
         MyMesh& mesh,
-        const std::vector<int>& cones_indices
-);
-
-#endif // FLATTENING_H
+        const std::vector<int>& cones,
+        int orbifold_type = 1);

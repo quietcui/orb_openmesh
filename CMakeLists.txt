@@ -19,6 +19,13 @@ add_executable(orb_openmesh
         src/Flattening.cpp
         src/MeshUtils.cpp
         src/Cutting.cpp
+        include/CutMesh.h
+        include/TreeCutter.h
+        src/TreeCutter.cpp
+        include/PosConstraints.h
+        src/PosConstraints.cpp
+        include/FlatteningSolver.h
+        src/FlattenningSolver.cpp
 )
 
 target_link_libraries(orb_openmesh PRIVATE

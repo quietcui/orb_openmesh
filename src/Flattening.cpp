@@ -4,14 +4,16 @@
 #include <OpenMesh/Core/IO/MeshIO.hh>
 #include <OpenMesh/Core/IO/Options.hh>
 
-
 #include <Eigen/Core>
 #include <Eigen/Sparse>
+
 #include <iostream>
 #include <unordered_map>
+#include <unordered_set>   // <== 新增
 #include <queue>
 #include <stdexcept>
 #include <cmath>
+#include <algorithm>   // std::find, std::rotate, std::sort, std::unique
 
 // =======================
 // OpenMesh <-> Eigen
@@ -53,10 +55,7 @@ static void eigen_to_mesh_flat(
         const Eigen::MatrixXd& flat_V,
         const CutMesh& cutMesh)
 {
-    // 注意：OpenMesh 中只有“原始”顶点数量，cutMesh 可能有复制的顶点。
-    // 这里我们做一个简单的策略：
-    //   对于每个原始顶点，只取 cutMesh.uncutIndsToCutInds[v] 的第一个副本的平面坐标。
-    // 这样无法显式表现切缝，但可以看到整体展平的形状。
+    // 对于每个原始顶点，只取 cutMesh.uncutIndsToCutInds[v] 的第一个副本的平面坐标
     int nOrigV = static_cast<int>(mesh.n_vertices());
     if (static_cast<int>(cutMesh.uncutIndsToCutInds.size()) != nOrigV) {
         std::cerr << "[eigen_to_mesh_flat] Warning: uncutIndsToCutInds size != n_orig_vertices\n";
@@ -95,11 +94,9 @@ static void build_cotangent_laplacian(
     const int nV = static_cast<int>(V.rows());
     const int nF = static_cast<int>(F.rows());
 
-    std::vector<Eigen::Triplet<double>> triplets;
-    triplets.reserve(nF * 9);
-
     // 先构建权重矩阵 W（对称），再构造 Laplacian L = diag(sum W_ij) - W
     std::vector<Eigen::Triplet<double>> w_triplets;
+    w_triplets.reserve(nF * 6);
 
     auto cot_angle = [&](const Eigen::Vector3d& p0,
                          const Eigen::Vector3d& p1,
@@ -116,6 +113,14 @@ static void build_cotangent_laplacian(
 
     Eigen::VectorXd diag = Eigen::VectorXd::Zero(nV);
 
+    auto add_weight = [&](int a, int b, double w) {
+        if (w == 0.0) return;
+        diag(a) += w;
+        diag(b) += w;
+        w_triplets.emplace_back(a, b, -w);
+        w_triplets.emplace_back(b, a, -w);
+    };
+
     for (int fi = 0; fi < nF; ++fi) {
         int i0 = F(fi, 0);
         int i1 = F(fi, 1);
@@ -129,14 +134,6 @@ static void build_cotangent_laplacian(
         double cot1 = cot_angle(p1, p2, p0); // at i1
         double cot2 = cot_angle(p2, p0, p1); // at i2
 
-        auto add_weight = [&](int a, int b, double w) {
-            if (w == 0.0) return;
-            diag(a) += w;
-            diag(b) += w;
-            w_triplets.emplace_back(a, b, -w);
-            w_triplets.emplace_back(b, a, -w);
-        };
-
         add_weight(i1, i2, cot0);
         add_weight(i2, i0, cot1);
         add_weight(i0, i1, cot2);
@@ -146,7 +143,7 @@ static void build_cotangent_laplacian(
     Eigen::SparseMatrix<double> W(nV, nV);
     W.setFromTriplets(w_triplets.begin(), w_triplets.end());
 
-    // D - W
+    // L = D - W
     std::vector<Eigen::Triplet<double>> L_trip;
     L_trip.reserve(W.nonZeros() + nV);
 
@@ -193,7 +190,6 @@ static void build_cotangent_laplacian(
             }
         }
         for (int i = 0; i < nV; ++i) {
-            // 对角线 = - sum_offdiag
             for (Eigen::SparseMatrix<double>::InnerIterator it(L, i); it; ++it) {
                 if (it.row() == i && it.col() == i) {
                     const_cast<double&>(it.valueRef()) = -rowSum(i);
@@ -250,7 +246,6 @@ static std::vector<int> ordered_boundary_cycle(const CutMesh& cm, int startVerte
         }
     }
 
-    // 有些 mesh 可能有多个边界环，我们这里默认你是一个球切开变成单一环
     std::vector<int> boundary;
 
     int start = startVertex;
@@ -285,7 +280,7 @@ static std::vector<int> ordered_boundary_cycle(const CutMesh& cm, int startVerte
         boundary.push_back(nxt);
         prev = cur;
         cur = nxt;
-        if (boundary.size() > (size_t)nV) break; // 防止死循环
+        if (boundary.size() > static_cast<size_t>(nV)) break; // 防止死循环
     }
 
     return boundary;
@@ -294,6 +289,7 @@ static std::vector<int> ordered_boundary_cycle(const CutMesh& cm, int startVerte
 // =======================
 // 主函数：flatten_sphere
 // =======================
+
 void flatten_sphere(
         MyMesh& mesh,
         const std::vector<int>& cones,
@@ -333,7 +329,7 @@ void flatten_sphere(
         throw std::runtime_error("flatten_sphere: orbifold type IV requires 4 cones.");
     }
 
-    // 3. 构造 cone-tree (和 Matlab: Flattener.cut() 里一样)
+    // 3. 构造 cone-tree
     const int k = static_cast<int>(cones.size());
     Eigen::MatrixXi treeAdj = Eigen::MatrixXi::Zero(k, k);
     int treeRoot = 0;
@@ -346,7 +342,7 @@ void flatten_sphere(
         treeAdj(2, 1) = 1;
         treeAdj(1, 2) = 1;
     } else if (k == 4) {
-        // fixedPairs = [1 3;3 4;4 2] (Matlab 1-based)
+        // fixedPairs = [1 3;3 4;4 2]
         treeRoot = 0; // root=1
         auto add_e = [&](int a, int b) {
             treeAdj(a, b) = 1;
@@ -374,12 +370,11 @@ void flatten_sphere(
                   << cmesh.pathPairs.size() << " seam(s)\n";
     }
 
-    // 5. 构造约束 PosConstraints（sphere orbifold 分支）
+    // 5. 构造约束 PosConstraints
     const int nVcut = static_cast<int>(cmesh.V.rows());
     PosConstraints cons(nVcut);
 
-    // 找 cut 网格的边界环（与 Matlab 的 TR.freeBoundary 类似）
-    // startP = M_cut.uncutIndsToCutInds{inds(1)} 的第一个副本
+    // 找 cut 网格的边界环
     int startP = -1;
     {
         int cone0 = cones[0]; // 原始 index
@@ -407,7 +402,6 @@ void flatten_sphere(
         if (PP.rows() == 0) continue;
         int r0 = 0;
         int r1 = PP.rows() - 1;
-        // PP([1 end], :) in Matlab
         pathEnds.push_back(PP(r0, 0));
         pathEnds.push_back(PP(r0, 1));
         pathEnds.push_back(PP(r1, 0));
@@ -431,8 +425,7 @@ void flatten_sphere(
                   << cones_on_boundary.size() << "\n";
     }
 
-    // 建立 map: cut 顶点 -> orbifold 中第几号 cone
-    // (通过 cutIndsToUncutInds 映射回原始顶点，然后在 cones 中查位置)
+    // 建立 map: cut 顶点 -> cones[] 中的下标
     std::unordered_map<int,int> cutVertexToConeIndex;
     for (size_t i = 0; i < cones_on_boundary.size(); ++i) {
         int v_cut = cones_on_boundary[i];
@@ -446,20 +439,13 @@ void flatten_sphere(
         }
     }
 
-    // 准备给每个 boundary 顶点一个“角度类型”，类似 Matlab 的 angs cell
-    // 这里用 map<int,int>，值=0 表示“没有角度约束”（只做平移约束）
-    std::unordered_map<int,int> angs; // cut vertex -> singularity value (2,3,4,6,..)
+    // angs: cut 顶点 -> singularity 值（2,3,4,6,...），0 表示没角度约束
+    std::unordered_map<int,int> angs;
 
-    // 给 cones_on_boundary 做位置 + 角度约束
+    // 环上均匀分布（备用）
     const int nbConesOnBoundary = static_cast<int>(cones_on_boundary.size());
-    if (nbConesOnBoundary == 0) {
-        std::cerr << "[flatten_sphere] WARNING: no boundary cones found; "
-                  << "constraints may be insufficient.\n";
-    }
-
-    // 用一个简单的环上均匀分布（与 Matlab 类似）
-    std::vector<Eigen::Vector2d> coords(nbConesOnBoundary);
-
+    std::vector<Eigen::Vector2d> coords;
+    coords.resize(nbConesOnBoundary);
     for (int i = 0; i < nbConesOnBoundary; ++i) {
         double theta = 2.0 * M_PI * (i+1) / nbConesOnBoundary + M_PI / 4.0;
         coords[i] = std::sqrt(2.0) * Eigen::Vector2d(std::cos(theta), std::sin(theta));
@@ -481,32 +467,23 @@ void flatten_sphere(
         tcoords = coords; // type II,III
     }
 
-    // 实际把 cone 点绑在平面上的固定位置，并给前两个 cone 设置 angle
-    // ====== 修正版：严格按 cones 的顺序给角点加约束 ======
+    // 把 cones[] 中前几个“真正有角度”的锥点钉在 tcoords 上，并记录 angs
     for (int v_cut : cones_on_boundary)
     {
-        // 找到这个 cut 顶点对应的是 cones[] 里的第几个
         auto itCone = cutVertexToConeIndex.find(v_cut);
         if (itCone == cutVertexToConeIndex.end())
             continue;
 
         int coneIdx = itCone->second; // 在 cones 中的序号：0..k-1
 
-        // 只有前几个 cones（取决于 singularities.size()）是“真正的角点”
-        // 对于 type I：singularities = {4,4}，只有 cones[0]、cones[1] 有角度约束
         if (coneIdx < static_cast<int>(singularities.size()) &&
             coneIdx < static_cast<int>(tcoords.size()))
         {
-            // 把这个 cone 坐标钉在预设的 tcoords[coneIdx] 上
+            // 把这个 cone 坐标钉在预设的 tcoords[coneIdx] 上（type I 时是 (-1,-1) 和 (1,1)）
             cons.addConstraint(v_cut, 1.0, tcoords[coneIdx]);
 
             // 记录它的 cone 角度，用于后面 seam 的旋转约束
             angs[v_cut] = singularities[coneIdx];
-        }
-        else
-        {
-            // 其余 cones（比如第三个）不加 angle 约束，只由 seam 约束决定
-            // 如果你想它也“钉在某个位置”，可以在这里额外加位置约束
         }
 
         // type IV 的特殊处理：第二个 cone 要额外加一个约束
@@ -516,8 +493,43 @@ void flatten_sphere(
         }
     }
 
+    // ==== 额外修正：type I + 3 个锥点时，给第 3 个锥点也一个固定位置 ====
+    if (orbifold_type == 1 && static_cast<int>(cones.size()) == 3)
+    {
+        int thirdOrig = cones[2];          // 第三个锥点在原始网格中的索引
+        int chosenCut = -1;
 
-    // 6. 对每条 cut seam 加旋转/平移约束：T*x_s = x_t（or up to rotation）
+        // 在边界的 seam 端点里，找一个来自第三个 cone 的 cut 顶点
+        for (int v_cut : cones_on_boundary)
+        {
+            if (v_cut < 0 || v_cut >= static_cast<int>(cmesh.cutIndsToUncutInds.size()))
+                continue;
+            if (cmesh.cutIndsToUncutInds[v_cut] == thirdOrig)
+            {
+                chosenCut = v_cut;
+                break;
+            }
+        }
+
+        // 如果没在 cones_on_boundary 里找到，就退一步
+        if (chosenCut == -1 &&
+            thirdOrig >= 0 &&
+            thirdOrig < static_cast<int>(cmesh.uncutIndsToCutInds.size()) &&
+            !cmesh.uncutIndsToCutInds[thirdOrig].empty())
+        {
+            chosenCut = cmesh.uncutIndsToCutInds[thirdOrig][0];
+        }
+
+        if (chosenCut != -1 && chosenCut < nVcut)
+        {
+            // 经验位置：右下角附近，和 Matlab 图类似
+            Eigen::Vector2d posThird(1.0, -1.0);
+            cons.addConstraint(chosenCut, 1.0, posThird);
+            // 不在 angs 里登记它的角度 —— seam 经过它时只做平移约束
+        }
+    }
+
+    // 6. 对每条 cut seam 加旋转/平移约束：T*x_s = x_t（或 up to rotation）
     if (verbose) {
         std::cout << "[flatten_sphere] Adding seam constraints...\n";
     }
@@ -525,7 +537,6 @@ void flatten_sphere(
     for (const auto& PP : cmesh.pathPairs) {
         if (PP.rows() == 0) continue;
 
-        // path1 = PP(:,0), path2 = PP(:,1)
         std::vector<int> path1, path2;
         path1.reserve(PP.rows());
         path2.reserve(PP.rows());
@@ -541,7 +552,7 @@ void flatten_sphere(
             sign = 1;
         }
 
-        // 取 path1 的起点，查它是否有角度约束
+        // 起点的角度（如果有）
         int v0 = path1.front();
         int ang_val = 0;
         auto itAng = angs.find(v0);
@@ -550,7 +561,7 @@ void flatten_sphere(
         }
 
         if (ang_val == 0) {
-            ang_val = 1; // 没有角度时，只做平移约束（相当于 rotation = Identity）
+            ang_val = 1; // 没有角度时，只做平移约束（相当于 R = I）
         }
 
         if (ang_val != 0) {
@@ -613,7 +624,7 @@ void flatten_sphere(
     // 9.25 统计每个原始锥点在 cut 网格中的所有副本，并打印
     std::vector<std::vector<int>> coneCopies(cones.size());
     for (int v = 0; v < nVcut; ++v) {
-        int orig = cmesh.cutIndsToUncutInds[v];  // 这个 cut 顶点来自哪个原始顶点
+        int orig = cmesh.cutIndsToUncutInds[v];
         for (size_t ci = 0; ci < cones.size(); ++ci) {
             if (orig == cones[ci]) {
                 coneCopies[ci].push_back(v);
@@ -630,27 +641,37 @@ void flatten_sphere(
         std::cout << "\n";
     }
 
-    // =====================================================
     // 9.5 生成调试网格：标记锥点 & 切缝上的点，并输出 flattened_debug.off
-    //     - 锥点: 红色 (255,0,0)
-    //     - 切缝上的点: 蓝色 (0,0,255)
-    //     - 其他点: 灰色 (200,200,200)
-    // =====================================================
     try {
-        // 标记 cut 网格上的点
         std::vector<bool> isConeCut(nVcut, false);
         std::vector<bool> isSeamCut(nVcut, false);
 
-        // 1) 用 coneCopies 标记所有锥点副本
+        // ==== 只给每个原始锥点选一个 cut 顶点染成红色 ====
+        std::unordered_set<int> boundarySet(all_binds.begin(), all_binds.end());
+
         for (size_t ci = 0; ci < coneCopies.size(); ++ci) {
+            if (coneCopies[ci].empty()) continue;
+
+            int chosen = -1;
+            // 优先选在边界上的拷贝
             for (int cutIdx : coneCopies[ci]) {
-                if (cutIdx >= 0 && cutIdx < nVcut) {
-                    isConeCut[cutIdx] = true;
+                if (cutIdx >= 0 && cutIdx < nVcut &&
+                    boundarySet.find(cutIdx) != boundarySet.end()) {
+                    chosen = cutIdx;
+                    break;
                 }
+            }
+            // 如果没有在边界上的，就选第一个
+            if (chosen == -1) {
+                chosen = coneCopies[ci][0];
+            }
+
+            if (chosen >= 0 && chosen < nVcut) {
+                isConeCut[chosen] = true;
             }
         }
 
-        // 2) 所有 seam 路径上的点标记为 seam
+        // seam 顶点
         for (const auto& PP : cmesh.pathPairs) {
             for (int r = 0; r < PP.rows(); ++r) {
                 int v1 = PP(r, 0);
@@ -660,7 +681,6 @@ void flatten_sphere(
             }
         }
 
-        // 3) 构造调试用的 OpenMesh 网格（用 cut 网格，顶点数 = nVcut）
         MyMesh debugMesh;
         debugMesh.request_vertex_colors();
 
@@ -671,7 +691,6 @@ void flatten_sphere(
             vhandles[i] = debugMesh.add_vertex(MyMesh::Point(x2d, y2d, 0.0f));
         }
 
-        // 添加三角面
         int nFcut = static_cast<int>(cmesh.T.rows());
         for (int fi = 0; fi < nFcut; ++fi) {
             int i0 = cmesh.T(fi, 0);
@@ -690,19 +709,17 @@ void flatten_sphere(
             debugMesh.add_face(face_vhandles);
         }
 
-        // 设置颜色
         for (int i = 0; i < nVcut; ++i) {
             MyMesh::Color c(200, 200, 200); // 默认灰色
             if (isSeamCut[i]) {
-                c = MyMesh::Color(0, 0, 255); // seam: 蓝色
+                c = MyMesh::Color(0, 0, 255); // seam: 蓝
             }
             if (isConeCut[i]) {
-                c = MyMesh::Color(255, 0, 0); // cone: 红色（覆盖 seam）
+                c = MyMesh::Color(255, 0, 0); // cone: 红（覆盖 seam）
             }
             debugMesh.set_color(vhandles[i], c);
         }
 
-        // 写出调试 OFF（带顶点颜色）
         OpenMesh::IO::Options wopt;
         wopt += OpenMesh::IO::Options::VertexColor;
 
@@ -720,14 +737,10 @@ void flatten_sphere(
                   << e.what() << "\n";
     }
 
-    // 10. 把展平结果写回原始 OpenMesh（简单版：每个原始顶点取第一个 cut 副本）
+    // 10. 把展平结果写回原始 OpenMesh
     eigen_to_mesh_flat(mesh, flat_V, cmesh);
 
     if (verbose) {
         std::cout << "Flattening finished. Mesh vertices updated to 2D.\n";
     }
 }
-
-
-
-

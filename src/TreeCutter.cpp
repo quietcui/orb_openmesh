@@ -6,6 +6,7 @@
 #include <queue>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 #include <algorithm>
 #include <stdexcept>
 #include <iostream>
@@ -20,6 +21,7 @@ TreeCutter::TreeCutter(const Eigen::MatrixXd& V,
         , treeStructure_(treeAdj)
         , treeIndices_(treeIndices)
         , treeRoot_(root)
+        , alreadyCut_(false)
 {
     int nV = static_cast<int>(V_.rows());
     cutIndsToUncutInds_.resize(nV);
@@ -414,123 +416,250 @@ TreeCutter::splitMeshByPath(const std::vector<int>& path)
 }
 
 void TreeCutter::splitCenterNode(
-        int center,
+        int centerVertex,
         std::vector<Eigen::Matrix<int, Eigen::Dynamic, 2>>& starPathPairs)
 {
-    // 1. 找到所有包含 center 的三角面
-    std::vector<int> oneRing;
-    for (int fi = 0; fi < T_.rows(); ++fi)
+    // ------------------------------------------------------------
+    // 1) collect all triangles incident to "centerVertex"
+    // ------------------------------------------------------------
+    const int nF = static_cast<int>(T_.rows());
+    std::vector<int> remaining;
+    remaining.reserve(nF);
+    for (int fi = 0; fi < nF; ++fi)
     {
-        if (T_(fi, 0) == center || T_(fi, 1) == center || T_(fi, 2) == center)
-            oneRing.push_back(fi);
+        int v0 = T_(fi,0);
+        int v1 = T_(fi,1);
+        int v2 = T_(fi,2);
+        if (v0 == centerVertex || v1 == centerVertex || v2 == centerVertex)
+            remaining.push_back(fi);
+    }
+    if (remaining.empty())
+    {
+        // No triangles around this center (should not happen, but be robust).
+        for (const auto& pp : starPathPairs)
+            pathPairs_.push_back(pp);
+        return;
     }
 
-    // 2. 把这些三角形按拓扑分组（Matlab 版本 groups{}）
+    // ------------------------------------------------------------
+    // 2) split the one-ring of centerVertex into groups of adjacent
+    //    triangles, where adjacency is via any non-center vertex.
+    // ------------------------------------------------------------
     std::vector<std::vector<int>> groups;
-    std::vector<int> stack = oneRing;
+    groups.reserve(4); // usually small
 
-    while (!stack.empty())
+    auto triSharesNonCenterVertex = [&](int f1, int f2) -> bool
     {
-        // 新分组
-        std::vector<int> g;
-        g.push_back(stack.back());
-        stack.pop_back();
+        int a0 = T_(f1,0), a1 = T_(f1,1), a2 = T_(f1,2);
+        int b0 = T_(f2,0), b1 = T_(f2,1), b2 = T_(f2,2);
+        int vertsA[3] = {a0,a1,a2};
+        int vertsB[3] = {b0,b1,b2};
+        for (int ia = 0; ia < 3; ++ia)
+        {
+            int va = vertsA[ia];
+            if (va == centerVertex) continue;
+            for (int ib = 0; ib < 3; ++ib)
+            {
+                int vb = vertsB[ib];
+                if (vb == centerVertex) continue;
+                if (va == vb)
+                    return true;
+            }
+        }
+        return false;
+    };
+
+    while (!remaining.empty())
+    {
+        std::vector<int> group;
+        group.push_back(remaining.back());
+        remaining.pop_back();
 
         bool changed = true;
         while (changed)
         {
             changed = false;
-            for (auto it = stack.begin(); it != stack.end();)
+            std::vector<int> rest;
+            rest.reserve(remaining.size());
+            for (int fi : remaining)
             {
-                int fi = *it;
-                // 判断与 g 中有无两个公共点（除 center 外）
-                bool adjacent = false;
-                for (int f0 : g)
+                bool belongs = false;
+                for (int gj : group)
                 {
-                    int cnt = 0;
-                    for (int a : {T_(f0,0), T_(f0,1), T_(f0,2)})
-                        for (int b : {T_(fi,0), T_(fi,1), T_(fi,2)})
-                            if (a == b && a != center) cnt++;
-
-                    if (cnt >= 1) { adjacent = true; break; }
+                    if (triSharesNonCenterVertex(fi, gj))
+                    {
+                        belongs = true;
+                        break;
+                    }
                 }
-
-                if (adjacent)
+                if (belongs)
                 {
-                    g.push_back(fi);
-                    it = stack.erase(it);
+                    group.push_back(fi);
                     changed = true;
                 }
-                else ++it;
+                else
+                {
+                    rest.push_back(fi);
+                }
             }
+            remaining.swap(rest);
         }
-        groups.push_back(g);
+
+        std::sort(group.begin(), group.end());
+        group.erase(std::unique(group.begin(), group.end()), group.end());
+        groups.push_back(group);
     }
 
-    // 3. 为每个分组创建新的 center 副本
-    std::vector<int> groupCenters(groups.size());
-    groupCenters[0] = center; // 第一个组使用原始顶点
+    // ------------------------------------------------------------
+    // 3) for each group, duplicate the center vertex (except the first)
+    // ------------------------------------------------------------
+    std::vector<int> groupCenters;
+    groupCenters.reserve(groups.size());
 
-    for (size_t gi = 1; gi < groups.size(); ++gi)
+    int currentNV = static_cast<int>(V_.rows());
+    for (size_t gi = 0; gi < groups.size(); ++gi)
     {
-        int newCenter = V_.rows();
-        V_.conservativeResize(newCenter + 1, 3);
-        V_.row(newCenter) = V_.row(center); // copy position
+        int centerInd;
+        if (gi == 0)
+        {
+            centerInd = centerVertex;
+        }
+        else
+        {
+            V_.conservativeResize(currentNV + 1, V_.cols());
+            V_.row(currentNV) = V_.row(centerVertex);
+            centerInd = currentNV;
+            ++currentNV;
 
-        cutIndsToUncutInds_.push_back(center);
-        uncutIndsToCutInds_[center].push_back(newCenter);
+            cutIndsToUncutInds_.push_back(centerVertex);
+            if (centerVertex >= 0 &&
+                centerVertex < static_cast<int>(uncutIndsToCutInds_.size()))
+            {
+                uncutIndsToCutInds_[centerVertex].push_back(centerInd);
+            }
+        }
 
-        groupCenters[gi] = newCenter;
-
-        // 更新三角面，把 center -> newCenter
         for (int fi : groups[gi])
         {
             for (int k = 0; k < 3; ++k)
             {
-                if (T_(fi, k) == center)
-                    T_(fi, k) = newCenter;
+                if (T_(fi,k) == centerVertex)
+                    T_(fi,k) = centerInd;
             }
+        }
+
+        groupCenters.push_back(centerInd);
+    }
+
+    // ------------------------------------------------------------
+    // 4) build per-group vertex sets
+    // ------------------------------------------------------------
+    std::vector<std::unordered_set<int>> groupVerts(groups.size());
+    for (size_t gi = 0; gi < groups.size(); ++gi)
+    {
+        auto& vs = groupVerts[gi];
+        for (int fi : groups[gi])
+        {
+            int v0 = T_(fi,0);
+            int v1 = T_(fi,1);
+            int v2 = T_(fi,2);
+            vs.insert(v0);
+            vs.insert(v1);
+            vs.insert(v2);
         }
     }
 
-    // 4. 对每条 seam path，修复 pathCorr 的两个端点，使其对应正确的中心副本
-    for (auto& PP : starPathPairs)
+    // ------------------------------------------------------------
+    // 5) update the local starPathPairs — add one row with centers
+    // ------------------------------------------------------------
+    for (auto& pair : starPathPairs)
     {
-        // PP(r,0)=path1, PP(r,1)=path2
-        // PP(0,0) or PP(0,1) 是 seam 开始的“center 顶点”
-        for (int side = 0; side < 2; ++side)
-        {
-            int v = PP(0, side);
-            if (cutIndsToUncutInds_[v] != center)
-                continue; // 不是 center 顶点
+        if (pair.rows() == 0) continue;
 
-            // 找这个路径属于哪个 group
+        int centers[2] = { -1, -1 };
+
+        for (int col = 0; col < 2; ++col)
+        {
             for (size_t gi = 0; gi < groups.size(); ++gi)
             {
+                const auto& vs = groupVerts[gi];
                 bool found = false;
-                for (int fi : groups[gi])
+                for (int r = 0; r < pair.rows(); ++r)
                 {
-                    for (int s = 0; s < PP.rows(); ++s)
+                    int v = pair(r, col);
+                    if (vs.find(v) != vs.end())
                     {
-                        int pv = PP(s, side);
-                        if (pv < 0 || pv >= (int)V_.rows()) continue;
-                        int c0=T_(fi,0), c1=T_(fi,1), c2=T_(fi,2);
-                        if (pv==c0 || pv==c1 || pv==c2)
-                        { found = true; break; }
+                        centers[col] = groupCenters[gi];
+                        found = true;
+                        break;
                     }
-                    if (found) break;
                 }
-                if (found)
-                {
-                    PP(0, side) = groupCenters[gi];
-                    break;
-                }
+                if (found) break;
             }
         }
 
-        pathPairs_.push_back(PP);
+        if (centers[0] == -1 || centers[1] == -1)
+        {
+            std::cerr << "[TreeCutter::splitCenterNode] Warning: could not "
+                      << "assign centers to starPathPair.\n";
+            continue;
+        }
+
+        Eigen::Matrix<int, Eigen::Dynamic, 2> newPair(pair.rows() + 1, 2);
+        newPair.row(0) << centers[0], centers[1];
+        newPair.block(1,0,pair.rows(),2) = pair;
+        pair.swap(newPair);
     }
+
+    // ------------------------------------------------------------
+    // 6) update already existing global pathPairs_
+    // ------------------------------------------------------------
+    for (auto& pair : pathPairs_)
+    {
+        if (pair.rows() == 0) continue;
+
+        int centers[2] = { -1, -1 };
+        for (int col = 0; col < 2; ++col)
+        {
+            for (size_t gi = 0; gi < groups.size(); ++gi)
+            {
+                const auto& vs = groupVerts[gi];
+                bool found = false;
+                for (int r = 0; r < pair.rows() - 1; ++r) // exclude last row
+                {
+                    int v = pair(r, col);
+                    if (vs.find(v) != vs.end())
+                    {
+                        centers[col] = groupCenters[gi];
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) break;
+            }
+        }
+
+        if ((centers[0] == -1) != (centers[1] == -1))
+        {
+            std::cerr << "[TreeCutter::splitCenterNode] Inconsistent centers "
+                      << "assignment for existing pathPairs_.\n";
+        }
+
+        if (centers[0] != -1 && centers[1] != -1)
+        {
+            int lastRow = pair.rows() - 1;
+            pair(lastRow,0) = centers[0];
+            pair(lastRow,1) = centers[1];
+        }
+    }
+
+    // ------------------------------------------------------------
+    // 7) append all starPathPairs to pathPairs_
+    // ------------------------------------------------------------
+    for (const auto& pp : starPathPairs)
+        pathPairs_.push_back(pp);
 }
+
 CutMesh TreeCutter::getCutMesh() const
 {
     return CutMesh(V_, T_, pathPairs_, cutIndsToUncutInds_, uncutIndsToCutInds_);

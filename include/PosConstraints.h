@@ -2,6 +2,7 @@
 #pragma once
 
 #include <Eigen/Core>
+#include <Eigen/Sparse>
 #include <vector>
 
 // 对应 Matlab 的 PosConstraints，变量顺序：
@@ -27,14 +28,18 @@ public:
                              const std::vector<int>& tinds,
                              const Eigen::Matrix2d& T);
 
-    Eigen::MatrixXd getA() const;  // m x 2n
+    // Return the sparse constraint matrix A (m x 2n).
+    // This matches the MATLAB implementation, which uses sparse rows.
+    Eigen::SparseMatrix<double> getA() const;
     Eigen::VectorXd getB() const;  // m
 
-    int numConstraints() const { return static_cast<int>(rows_.size()); }
+    int numConstraints() const { return nrows_; }
 
 private:
     int nvars_;
     int ncols_;
-    std::vector<Eigen::RowVectorXd> rows_;
+
+    int nrows_ = 0;
+    std::vector<Eigen::Triplet<double>> trips_;
     std::vector<double> b_;
 };

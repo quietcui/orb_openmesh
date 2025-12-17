@@ -27,7 +27,7 @@ struct CutMesh
             const std::vector<Eigen::Matrix<int, Eigen::Dynamic, 2>>& pathPairs_,
             const std::vector<int>& cut2uncut,
             const std::vector<std::vector<int>>& uncut2cut)
-            : V(V_)
+             : V(V_)
             , T(T_)
             , pathPairs(pathPairs_)
             , cutIndsToUncutInds(cut2uncut)

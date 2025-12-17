@@ -263,6 +263,9 @@ TreeCutter::splitMeshByPath(const std::vector<int>& path)
         return tri[next] == b;
     };
 
+    // ------------------------------------------------------------
+    // (MATLAB) Seed left/right triangle sets by walking along the path edges
+    // ------------------------------------------------------------
     for (size_t j = 0; j + 1 < path.size(); ++j)
     {
         int a = path[j];
@@ -274,7 +277,9 @@ TreeCutter::splitMeshByPath(const std::vector<int>& path)
             if (triContainsEdge(fi, a, b))
                 tris.push_back(fi);
         }
-        if (tris.size() != 2) continue;
+        // MATLAB asserts this (shortest paths are not allowed to go on boundary)
+        if (tris.size() != 2)
+            continue;
 
         int t0 = tris[0], t1 = tris[1];
         if (edgeOrientationPositive(t0, a, b))
@@ -297,37 +302,49 @@ TreeCutter::splitMeshByPath(const std::vector<int>& path)
     uniq(left);
     uniq(right);
 
-    std::vector<int> touching;
+    // ------------------------------------------------------------
+    // (MATLAB) inds = all triangles touching internal vertices of the path,
+    // then remove left/right. We'll later flood-fill these into left/right.
+    // ------------------------------------------------------------
+    std::vector<int> inds;
+    inds.reserve(nF);
     {
         std::vector<char> used(nF, 0);
         for (size_t jj = 1; jj + 1 < path.size(); ++jj)
         {
-            int v = path[jj];
+            const int v = path[jj];
             for (int fi = 0; fi < nF; ++fi)
             {
                 if (used[fi]) continue;
-                int c0 = T_(fi,0), c1 = T_(fi,1), c2 = T_(fi,2);
+                const int c0 = T_(fi,0), c1 = T_(fi,1), c2 = T_(fi,2);
                 if (c0 == v || c1 == v || c2 == v)
                 {
                     used[fi] = 1;
-                    touching.push_back(fi);
+                    inds.push_back(fi);
                 }
             }
         }
     }
 
-    auto remove_from = [&](std::vector<int>& base, const std::vector<int>& rem)
+    auto mark_remove = [&](std::vector<int>& base, const std::vector<int>& rem)
     {
         std::vector<char> mark(nF, 0);
-        for (int x : rem) mark[x] = 1;
+        for (int x : rem)
+        {
+            if (x >= 0 && x < nF) mark[x] = 1;
+        }
         std::vector<int> out;
         out.reserve(base.size());
-        for (int x : base) if (!mark[x]) out.push_back(x);
+        for (int x : base)
+        {
+            if (x < 0 || x >= nF) continue;
+            if (!mark[x]) out.push_back(x);
+        }
         base.swap(out);
     };
 
-    remove_from(touching, left);
-    remove_from(touching, right);
+    mark_remove(inds, left);
+    mark_remove(inds, right);
 
     auto shareTwo = [&](int f1, int f2) -> bool
     {
@@ -340,43 +357,101 @@ TreeCutter::splitMeshByPath(const std::vector<int>& path)
         return cnt >= 2;
     };
 
+    // ------------------------------------------------------------
+    // (MATLAB) Flood-fill: expand right and left by triangle adjacency
+    // (sharing >=2 vertices), using the evolving sets.
+    // right = right \ left is applied each iteration.
+    // ------------------------------------------------------------
+    std::vector<char> inLeft(nF, 0), inRight(nF, 0), inInds(nF, 0);
+    for (int f : left)  if (f >= 0 && f < nF) inLeft[f]  = 1;
+    for (int f : right) if (f >= 0 && f < nF) inRight[f] = 1;
+    for (int f : inds)  if (f >= 0 && f < nF) inInds[f]  = 1;
+
     for (int iter = 0; iter < 1000; ++iter)
     {
         bool changed = false;
-        std::vector<int> newRight, newLeft;
 
-        for (int fi : touching)
+        // Snapshot current sets (MATLAB for-loop length is fixed per iteration).
+        const std::vector<int> rightSnap = right;
+        const std::vector<int> leftSnap  = left;
+
+        // Expand right
+        for (int rf : rightSnap)
         {
-            bool nearR = false, nearL = false;
+            for (int fi : inds)
+            {
+                if (!inInds[fi]) continue;
+                if (shareTwo(fi, rf))
+                {
+                    if (!inRight[fi])
+                    {
+                        inRight[fi] = 1;
+                        right.push_back(fi);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        // Expand left
+        for (int lf : leftSnap)
+        {
+            for (int fi : inds)
+            {
+                if (!inInds[fi]) continue;
+                if (shareTwo(fi, lf))
+                {
+                    if (!inLeft[fi])
+                    {
+                        inLeft[fi] = 1;
+                        left.push_back(fi);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        // right = setdiff(right, left)
+        if (!right.empty())
+        {
+            std::vector<int> newRight;
+            newRight.reserve(right.size());
             for (int rf : right)
             {
-                if (shareTwo(fi, rf)) { nearR = true; break; }
+                if (rf >= 0 && rf < nF && inLeft[rf])
+                {
+                    inRight[rf] = 0;
+                    changed = true;
+                    continue;
+                }
+                newRight.push_back(rf);
             }
-            for (int lf : left)
-            {
-                if (shareTwo(fi, lf)) { nearL = true; break; }
-            }
-            if (nearR && !nearL) newRight.push_back(fi);
-            else if (nearL && !nearR) newLeft.push_back(fi);
+            right.swap(newRight);
         }
 
-        if (!newRight.empty())
+        // Remove assigned triangles from inds
+        if (!inds.empty())
         {
-            right.insert(right.end(), newRight.begin(), newRight.end());
-            changed = true;
-        }
-        if (!newLeft.empty())
-        {
-            left.insert(left.end(), newLeft.begin(), newLeft.end());
-            changed = true;
+            std::vector<int> newInds;
+            newInds.reserve(inds.size());
+            for (int fi : inds)
+            {
+                if (fi < 0 || fi >= nF) continue;
+                if (inLeft[fi] || inRight[fi])
+                {
+                    inInds[fi] = 0;
+                    continue;
+                }
+                newInds.push_back(fi);
+            }
+            inds.swap(newInds);
         }
 
         uniq(left);
         uniq(right);
-        remove_from(touching, left);
-        remove_from(touching, right);
 
-        if (!changed || touching.empty()) break;
+        if (!changed || inds.empty())
+            break;
     }
 
     std::vector<std::pair<int,int>> pathCorr;

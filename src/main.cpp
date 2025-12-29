@@ -1,14 +1,14 @@
 // main.cpp
 //
-// Minimal CLI wrapper around flatten_sphere() (see src/Flattening.cpp).
-// The goal is to make it easy to reproduce the author's MATLAB experiments:
-// - Provide input mesh
-// - Provide orbifold type (1..4)
-// - Provide cone vertex indices
+// 围绕 flatten_sphere() 的最小命令行封装（参见 src/Flattening.cpp）。
+// 旨在简化复现作者MATLAB实验的流程：
+// - 提供输入网格
+// - 指定orbifold类型（1..4）
+// - 提供锥体顶点索引
 //
-// Example (3-cone orbifolds):
+// 示例（3锥orbifold）：
 //   ./orb_openmesh input.off output.off 1 12 345 678
-// If you are copying indices from MATLAB (1-based), add --1based:
+// 若从MATLAB复制索引（基于1的索引），需添加--1based参数：
 //   ./orb_openmesh input.off output.off 1 13 346 679 --1based
 
 #include "Flattening.h"

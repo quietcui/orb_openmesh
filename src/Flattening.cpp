@@ -1,30 +1,27 @@
 // Flattening.cpp
 //
-// This implementation is a close, line-by-line translation of the author's
-// MATLAB code from:
+// 本实现是对作者MATLAB代码的逐行近似转换，
+// 源自：
 //   https://github.com/noamaig/euclidean_orbifolds
-// Specifically, it matches the logic in Flattener.flatten_sphere() and
-// computeFlattening().
+// 具体对应Flattener.flatten_sphere()与
+// computeFlattening()中的逻辑。
 //
-// Key conventions (matching MATLAB repo):
-// - Cotangent Laplacian L0 has **positive off-diagonal weights** and
-//   **negative diagonal** (each row sums to 0). This matches the author's
-//   cotmatrix.m output.
-// - If negative cot weights exist (mesh not Delaunay), they are clamped to a
-//   small positive constant (1e-2), then the diagonal is recomputed.
-// - Boundary cones are detected exactly like MATLAB:
+// 关键约定（与 MATLAB 仓库一致）：
+// - 余切拉普拉斯算子 L0 具有 **正非对角权重** 和
+//   **负对角权重**（每行求和为 0）。这与作者的
+//   cotmatrix.m 输出结果一致。
+// - 若存在负余切权重（非德劳内网格），则将其限制为
+//   小正常数（1e-2），随后重新计算对角线。
+// - 边界锥检测方式完全遵循MATLAB：
 //     pathEnds = unique([pathPairs{*}(1,:) pathPairs{*}(end,:)])
 //     p        = all_binds( ismember(all_binds, pathEnds) )
-//   and the first boundary vertex is rotated to start at inds(1)'s cut index.
+//   并将首个边界顶点旋转至 inds(1) 的切割索引处起始。
 
 #include "Flattening.h"
-
 #include <OpenMesh/Core/IO/MeshIO.hh>
 #include <OpenMesh/Core/IO/Options.hh>
-
 #include <Eigen/Core>
 #include <Eigen/Sparse>
-
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -420,11 +417,8 @@ static std::vector<int> ordered_boundary_cycle(const CutMesh& cm, int startVerte
 // Main API: flatten_sphere
 // =======================
 
-void flatten_sphere(
-        MyMesh& mesh,
-        const std::vector<int>& cones,
-        int orbifold_type,
-        bool verbose)
+void flatten_sphere(MyMesh& mesh,const std::vector<int>& cones,
+                    int orbifold_type,bool verbose)
 {
     if (cones.size() < 3)
         throw std::runtime_error("flatten_sphere: need at least 3 cone indices.");

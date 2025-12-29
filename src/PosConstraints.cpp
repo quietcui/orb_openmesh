@@ -17,8 +17,8 @@ PosConstraints::PosConstraints(int nvars)
     if (nvars_ <= 0)
         throw std::runtime_error("PosConstraints: nvars must be positive");
 
-    trips_.reserve(128);
-    b_.reserve(128);
+    trips_.reserve(128);//存稀疏矩阵 A 的非零项（三元组 row/col/value）
+    b_.reserve(128);//存右侧向量 b 的每一行
 }
 
 void PosConstraints::addConstraint(int ind, double w, const Eigen::Vector2d& rhs)

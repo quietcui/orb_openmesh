@@ -36,8 +36,8 @@ public:
     int numConstraints() const { return nrows_; }
 
 private:
-    int nvars_;
-    int ncols_;
+    int nvars_;//cut mesh 的顶点数
+    int ncols_;//2*nvars（因为每个点 2 个未知量 x/y）
 
     int nrows_ = 0;
     std::vector<Eigen::Triplet<double>> trips_;

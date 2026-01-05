@@ -1,21 +1,3 @@
-// Flattening.cpp
-//
-// 本实现是对作者MATLAB代码的逐行近似转换，
-// 源自：
-//   https://github.com/noamaig/euclidean_orbifolds
-// 具体对应Flattener.flatten_sphere()与
-// computeFlattening()中的逻辑。
-//
-// 关键约定（与 MATLAB 仓库一致）：
-// - 余切拉普拉斯算子 L0 具有 **正非对角权重** 和
-//   **负对角权重**（每行求和为 0）。这与作者的
-//   cotmatrix.m 输出结果一致。
-// - 若存在负余切权重（非德劳内网格），则将其限制为
-//   小正常数（1e-2），随后重新计算对角线。
-// - 边界锥检测方式完全遵循MATLAB：
-//     pathEnds = unique([pathPairs{*}(1,:) pathPairs{*}(end,:)])
-//     p        = all_binds( ismember(all_binds, pathEnds) )
-//   并将首个边界顶点旋转至 inds(1) 的切割索引处起始。
 
 #include "Flattening.h"
 #include <OpenMesh/Core/IO/MeshIO.hh>
@@ -66,6 +48,49 @@ static void mesh_to_eigen(
             F(idx, k++) = fv_it->idx();
             if (k >= 3) break;
         }
+    }
+}
+static void replace_mesh_with_cut_flat(
+        MyMesh& mesh,
+        const Eigen::MatrixXd& flat_V,   // nVcut x 2
+        const CutMesh& cutMesh,
+        const std::vector<char>* isSeam = nullptr,
+        const std::vector<char>* isCone = nullptr)
+{
+    const int nVcut = static_cast<int>(cutMesh.V.rows());
+
+    // 用 cut mesh 的拓扑完全替换掉原 mesh
+    mesh.clear();
+    mesh.request_vertex_colors();
+
+    std::vector<MyMesh::VertexHandle> vhandles(nVcut);
+    for (int i = 0; i < nVcut; ++i)
+    {
+        vhandles[i] = mesh.add_vertex(MyMesh::Point(
+                static_cast<float>(flat_V(i, 0)),
+                static_cast<float>(flat_V(i, 1)),
+                0.0f));
+    }
+
+    // faces: 直接使用 cutMesh.T
+    for (int fi = 0; fi < cutMesh.T.rows(); ++fi)
+    {
+        const int a = cutMesh.T(fi, 0);
+        const int b = cutMesh.T(fi, 1);
+        const int c = cutMesh.T(fi, 2);
+        if (a < 0 || a >= nVcut || b < 0 || b >= nVcut || c < 0 || c >= nVcut)
+            continue;
+
+        mesh.add_face({ vhandles[a], vhandles[b], vhandles[c] });
+    }
+
+    // 可选：上色（不影响几何，只用于可视化 debug）
+    for (int i = 0; i < nVcut; ++i)
+    {
+        MyMesh::Color col(200, 200, 200);
+        if (isSeam && (*isSeam)[i]) col = MyMesh::Color(0, 0, 255);
+        if (isCone && (*isCone)[i]) col = MyMesh::Color(255, 0, 0);
+        mesh.set_color(vhandles[i], col);
     }
 }
 
@@ -764,9 +789,32 @@ void flatten_sphere(MyMesh& mesh,const std::vector<int>& cones,
     catch (...) {
         // ignore debug output failures
     }
-
     // 10) Write result back to original mesh
-    eigen_to_mesh_flat(mesh, flat_V, M_cut);
+    //eigen_to_mesh_flat(mesh, flat_V, M_cut);
+    // 10) Build seam / cone markers (optional, for coloring)
+    std::vector<char> isSeam(nVcut, 0);
+    for (const auto& PP : M_cut.pathPairs)
+    {
+        for (int r = 0; r < PP.rows(); ++r)
+        {
+            const int a = PP(r, 0);
+            const int b2 = PP(r, 1);
+            if (a >= 0 && a < nVcut) isSeam[a] = 1;
+            if (b2 >= 0 && b2 < nVcut) isSeam[b2] = 1;
+        }
+    }
+
+    std::vector<char> isCone(nVcut, 0);
+    for (int v_cut : p)
+    {
+        if (v_cut >= 0 && v_cut < nVcut) isCone[v_cut] = 1;
+    }
+
+// IMPORTANT: replace original mesh by CUT mesh in 2D
+    replace_mesh_with_cut_flat(mesh, flat_V, M_cut, &isSeam, &isCone);
+
+    if (verbose)
+        std::cout << "Flattening finished. Output mesh is CUT mesh in 2D.\n";
 
     if (verbose)
         std::cout << "Flattening finished. Mesh vertices updated to 2D.\n";
